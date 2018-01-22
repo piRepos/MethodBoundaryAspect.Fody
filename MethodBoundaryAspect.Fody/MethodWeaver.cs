@@ -1,5 +1,7 @@
-using System;
+using MethodBoundaryAspect.Fody.Attributes;
 using Mono.Cecil;
+using System;
+using System.Linq;
 
 namespace MethodBoundaryAspect.Fody
 {
@@ -10,16 +12,67 @@ namespace MethodBoundaryAspect.Fody
         private bool _finished;
         
         public int WeaveCounter { get; private set; }
+        
+        static bool DetermineValidation(string methodName, string className, string aspectName,
+            string[] methodParams, byte[] blob, string[] ctorParams)
+        {
+            var typeInfo = Type.GetType(className);
+            if (typeInfo == null)
+                throw new InvalidOperationException(String.Format("Could not find type '{0}'.", className));
+
+            try
+            {
+                Type[] parameters = methodParams.Select(Type.GetType).ToArray();
+                var methodInfo = typeInfo.GetMethod(methodName, parameters);
+
+                Type aspectType = Type.GetType(aspectName);
+                var ctorInfo = aspectType.GetConstructor(ctorParams.Select(Type.GetType).ToArray());
+                if (ctorInfo == null)
+                    throw new InvalidOperationException("Could not find constructor for aspect.");
+
+                var module = ModuleDefinition.CreateModule("Tmp.dll", ModuleKind.Dll);
+                TypeReference cecilType = module.ImportReference(aspectType);
+                MethodReference cecilCtor = cecilType.Resolve().Methods.FirstOrDefault(m =>
+                    m.Name == methodName &&
+                    m.Parameters.Select(p => p.ParameterType.FullName).SequenceEqual(ctorParams));
+
+                var att = new CustomAttribute(cecilCtor, blob);
+                object[] ctorArgs = att.ConstructorArguments.Select(arg => arg.Value).ToArray();
+                var aspect = Activator.CreateInstance(aspectType, ctorArgs) as OnMethodBoundaryAspect;
+                if (aspect == null)
+                    throw new InvalidOperationException("Could not create aspect.");
+
+                return aspect.CompileTimeValidate(methodInfo);
+            }
+            catch (Exception e)
+            {
+                throw new InvalidOperationException("Error while trying to compile-time validate.", e);
+            }
+        }
 
         public void Weave(
             MethodDefinition method,
             CustomAttribute aspect,
             AspectMethods overriddenAspectMethods,
-            ModuleDefinition moduleDefinition)
+            ModuleDefinition moduleDefinition,
+            TypeReference type,
+            byte[] unweavedAssembly)
         {
             if (overriddenAspectMethods == AspectMethods.None)
                 return;
             
+            if (overriddenAspectMethods.HasFlag(AspectMethods.CompileTimeValidate))
+            {
+                AppDomain.CurrentDomain.Load(unweavedAssembly);
+                if (!DetermineValidation(method.Name,
+                    String.Format("{0}, {1}", type.FullName, type.Module.Assembly.Name.Name),
+                    String.Format("{0}, {1}", aspect.AttributeType.FullName, aspect.AttributeType.Module.Assembly.Name.Name),
+                    method.Parameters.Select(p => p.ParameterType.FullName).ToArray(),
+                    aspect.GetBlob(),
+                    aspect.Constructor.Parameters.Select(p => p.ParameterType.FullName).ToArray()))
+                    return;
+            }
+
             var creator = new InstructionBlockChainCreator(method, aspect.AttributeType, moduleDefinition, WeaveCounter);
 
             _methodBodyChanger = new MethodBodyPatcher(method.Name, method);

@@ -20,7 +20,7 @@ namespace MethodBoundaryAspect.Fody.Attributes
 
         public virtual bool CompileTimeValidate(MethodBase method)
         {
-            throw new NotImplementedException("TODO!");
+            return true;
         }
     }
 }

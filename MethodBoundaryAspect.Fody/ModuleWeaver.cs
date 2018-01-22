@@ -55,11 +55,13 @@ namespace MethodBoundaryAspect.Fody
         public int TotalWeavedTypes { get; private set; }
         public int TotalWeavedMethods { get; private set; }
         public int TotalWeavedPropertyMethods { get; private set; }
+        public byte[] UnweavedAssembly { get; private set; }
 
         public MethodDefinition LastWeavedMethod { get; private set; }
 
         public void Execute()
         {
+            UnweavedAssembly = File.ReadAllBytes(ModuleDefinition.FileName);
             Execute(ModuleDefinition);
         }
 
@@ -101,6 +103,7 @@ namespace MethodBoundaryAspect.Fody
             if (AdditionalAssemblyResolveFolders.Any())
                 readerParameters.AssemblyResolver = new FolderAssemblyResolver(AdditionalAssemblyResolveFolders);
 
+            UnweavedAssembly = File.ReadAllBytes(assemblyPath);
 			using (var assemblyDefinition = AssemblyDefinition.ReadAssembly(assemblyPath, readerParameters))
 			{
 				var module = assemblyDefinition.MainModule;
@@ -191,7 +194,8 @@ namespace MethodBoundaryAspect.Fody
                 weavedAtLeastOneMethod = WeaveMethod(
                     module,
                     method,
-                    aspectInfos);
+                    aspectInfos,
+                    type);
             }   
 
             if (weavedAtLeastOneMethod)
@@ -201,7 +205,8 @@ namespace MethodBoundaryAspect.Fody
         private bool WeaveMethod(
             ModuleDefinition module, 
             MethodDefinition method,
-            List<AspectInfo> aspectInfos)
+            List<AspectInfo> aspectInfos,
+            TypeReference type)
         {
             aspectInfos = AspectOrderer.Order(aspectInfos);
             aspectInfos.Reverse(); // last aspect has to be weaved in first
@@ -224,10 +229,8 @@ namespace MethodBoundaryAspect.Fody
                     var overriddenAspectMethods = GetUsedAspectMethods(aspectTypeDefinition);
                     if (overriddenAspectMethods == AspectMethods.None)
                         continue;
-
                     
-
-                    methodWeaver.Weave(method, aspectInfo.AspectAttribute, overriddenAspectMethods, module);
+                    methodWeaver.Weave(method, aspectInfo.AspectAttribute, overriddenAspectMethods, module, type, UnweavedAssembly);
                 }
 
                 if (methodWeaver.WeaveCounter == 0)
@@ -272,6 +275,8 @@ namespace MethodBoundaryAspect.Fody
                 aspectMethods |= AspectMethods.OnExit;
             if (overloadedMethods.ContainsKey("OnException"))
                 aspectMethods |= AspectMethods.OnException;
+            if (overloadedMethods.ContainsKey(nameof(OnMethodBoundaryAspect.CompileTimeValidate)))
+                aspectMethods |= AspectMethods.CompileTimeValidate;
             return aspectMethods;
         }
 

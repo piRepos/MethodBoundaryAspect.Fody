@@ -288,11 +288,59 @@ namespace MethodBoundaryAspect.Fody
             
             for (int i = 0; i < _method.Parameters.Count; ++i)
             {
+                var p = _method.Parameters[i];
+                if (p.ParameterType.IsByReference)
+                    instructions.Add(_processor.Create(OpCodes.Ldarg, i + 1));
                 instructions.Add(_processor.Create(OpCodes.Ldloc, argsAsReturned));
                 instructions.Add(_processor.Create(OpCodes.Ldc_I4, i));
                 instructions.Add(_processor.Create(OpCodes.Ldelem_Ref));
-                instructions.Add(_processor.Create(OpCodes.Unbox_Any, _method.Parameters[i].ParameterType));
-                instructions.Add(_processor.Create(OpCodes.Starg_S, _method.Parameters[i]));
+
+                if (p.ParameterType.IsByReference)
+                {
+                    var pureType = new TypeReference(p.ParameterType.Namespace, p.ParameterType.Name.Trim('&'), p.ParameterType.Module, p.ParameterType.Scope, p.ParameterType.IsValueType);
+                    instructions.Add(_processor.Create(OpCodes.Unbox_Any, pureType));
+                    OpCode st;
+                    var resolvedPureType = pureType.Resolve();
+                    if (resolvedPureType.IsValueType)
+                    {
+                        switch (resolvedPureType.MetadataType)
+                        {
+                            case MetadataType.Boolean:
+                            case MetadataType.Int32:
+                            case MetadataType.UInt32:
+                                st = OpCodes.Stind_I4; break;
+                            case MetadataType.Byte:
+                            case MetadataType.SByte:
+                                st = OpCodes.Stind_I1; break;
+                            case MetadataType.Char:
+                            case MetadataType.Int16:
+                            case MetadataType.UInt16:
+                                st = OpCodes.Stind_I2; break;
+                            case MetadataType.Double:
+                                st = OpCodes.Stind_R8; break;
+                            case MetadataType.Int64:
+                            case MetadataType.UInt64:
+                                st = OpCodes.Stind_I8; break;
+                            case MetadataType.Single:
+                                st = OpCodes.Stind_R4; break;
+                            default:
+                                if (resolvedPureType.IsEnum)
+                                    st = OpCodes.Stind_I4;
+                                else
+                                    st = OpCodes.Stobj;
+                                break;
+                        }
+                    }
+                    else
+                        st = OpCodes.Stind_Ref;
+
+                    instructions.Add(_processor.Create(st));
+                }
+                else
+                {
+                    instructions.Add(_processor.Create(OpCodes.Unbox_Any, p.ParameterType));
+                    instructions.Add(_processor.Create(OpCodes.Starg_S, p));
+                }
             }
             
             return new InstructionBlock("ReadParameterArray: ", instructions);
