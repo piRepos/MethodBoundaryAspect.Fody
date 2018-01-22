@@ -199,9 +199,11 @@ namespace MethodBoundaryAspect.Fody
                 md => md.Name == "OnEntry");
             var callOnEntryBlock = _creator.CallVoidInstanceMethod(createAspectInstance.Variable, onEntryMethodRef,
                 newMethodExectionArgsBlockChain.Variable);
+            var readParameterBlock = _creator.ReadParameterArray(newMethodExectionArgsBlockChain.Variable);
 
             var callAspectOnEntryBlockChain = new InstructionBlockChain();
             callAspectOnEntryBlockChain.Add(callOnEntryBlock);
+            callAspectOnEntryBlockChain.Add(readParameterBlock);
             return callAspectOnEntryBlockChain;
         }
 

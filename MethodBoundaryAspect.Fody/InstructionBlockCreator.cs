@@ -278,6 +278,26 @@ namespace MethodBoundaryAspect.Fody
             return instructions;
         }
 
+        public InstructionBlock ReadParameterArray(VariableDefinition executionArgs)
+        {
+            var instructions = new List<Instruction>();
+
+            var argsAsReturned = CreateVariable(_referenceFinder.GetTypeReference(typeof(Object[])));
+            instructions.AddRange(CreateInstanceMethodCallInstructions(executionArgs, argsAsReturned,
+                _referenceFinder.GetMethodReference(executionArgs.VariableType, md => md.Name == "get_Arguments")));
+            
+            for (int i = 0; i < _method.Parameters.Count; ++i)
+            {
+                instructions.Add(_processor.Create(OpCodes.Ldloc, argsAsReturned));
+                instructions.Add(_processor.Create(OpCodes.Ldc_I4, i));
+                instructions.Add(_processor.Create(OpCodes.Ldelem_Ref));
+                instructions.Add(_processor.Create(OpCodes.Unbox_Any, _method.Parameters[i].ParameterType));
+                instructions.Add(_processor.Create(OpCodes.Starg_S, _method.Parameters[i]));
+            }
+            
+            return new InstructionBlock("ReadParameterArray: ", instructions);
+        }
+
         private IList<Instruction> LoadValueOnStack(TypeReference parameterType, object value, ModuleDefinition module)
         {
             if (parameterType.IsPrimitive || (parameterType.FullName == "System.String"))
