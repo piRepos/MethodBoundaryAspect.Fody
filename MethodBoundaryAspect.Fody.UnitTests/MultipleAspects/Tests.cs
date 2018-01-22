@@ -117,6 +117,11 @@ namespace MethodBoundaryAspect.Fody.UnitTests.MultipleAspects
             {
                 instructions[lastIndex - 1].OpCode.Should().Match(x => AllLdLocOpCodes.Contains((OpCode)x));
 
+                if (instructions[lastIndex - 3].OpCode == OpCodes.Unbox_Any)
+                {
+                    lastIndex -= 4; // ldloc methodArgs; call get_ReturnValue; unbox.any; stloc returnValue;
+                }
+
                 instructions[lastIndex - 9].OpCode.Should().Be(OpCodes.Nop);
                 instructions[lastIndex - 11].OpCode.Should().Be(OpCodes.Nop);
             }

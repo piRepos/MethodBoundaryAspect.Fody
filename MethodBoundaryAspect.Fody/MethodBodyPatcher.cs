@@ -216,11 +216,13 @@ namespace MethodBoundaryAspect.Fody
         public void AddOnExitCall(
             NamedInstructionBlockChain createAspectInstance,
             InstructionBlockChain callAspectOnExit,
-            InstructionBlockChain setMethodExecutionArgsReturnValue)
+            InstructionBlockChain setMethodExecutionArgsReturnValue,
+            InstructionBlockChain readReturnValue)
         {
             var current = setMethodExecutionArgsReturnValue.InsertAfter(_markEnd2BeforeOnExitCall, _processor);
             current = AddCreateAspectInstance(createAspectInstance, current);
             callAspectOnExit.InsertAfter(current, _processor);
+            readReturnValue.InsertAfter(callAspectOnExit.Last, _processor);
         }
 
         public void AddOnExceptionCall(

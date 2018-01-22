@@ -47,8 +47,11 @@ namespace MethodBoundaryAspect.Fody
                     creator.SetMethodExecutionArgsReturnValue(createMethodExecutionArgsInstance, loadReturnValue);
                 var callAspectOnExit = creator.CallAspectOnExit(createAspectInstance,
                     createMethodExecutionArgsInstance);
+
+                var readReturnValue = creator.ReadReturnValue(createMethodExecutionArgsInstance, loadReturnValue);
+
                 _methodBodyChanger.AddOnExitCall(createAspectInstance, callAspectOnExit,
-                    setMethodExecutionArgsReturnValue);
+                    setMethodExecutionArgsReturnValue, readReturnValue);
             }
 
             if (overriddenAspectMethods.HasFlag(AspectMethods.OnException))

@@ -117,7 +117,8 @@ namespace MethodBoundaryAspect.Fody
         }
 
         public InstructionBlockChain SetMethodExecutionArgsReturnValue(
-            NamedInstructionBlockChain newMethodExectionArgsBlockChain, NamedInstructionBlockChain loadReturnValue)
+            NamedInstructionBlockChain newMethodExectionArgsBlockChain,
+            NamedInstructionBlockChain loadReturnValue)
         {
             if (!_creator.HasReturnValue())
                 return new InstructionBlockChain();
@@ -202,6 +203,24 @@ namespace MethodBoundaryAspect.Fody
             var callAspectOnEntryBlockChain = new InstructionBlockChain();
             callAspectOnEntryBlockChain.Add(callOnEntryBlock);
             return callAspectOnEntryBlockChain;
+        }
+
+        public InstructionBlockChain ReadReturnValue(NamedInstructionBlockChain newMethodExecutionArgsBlockChain,
+            NamedInstructionBlockChain returnValue)
+        {
+            if (!_creator.HasReturnValue())
+                return new InstructionBlockChain();
+
+            // VariableDefinition, VariableDefinition, MethodDefinition
+            var getReturnValue =
+                _referenceFinder.GetMethodReference(newMethodExecutionArgsBlockChain.TypeReference,
+                    md => md.Name == "get_ReturnValue");
+            
+            var readValueBlock = _creator.CallInstanceMethod(newMethodExecutionArgsBlockChain.Variable, returnValue.Variable, getReturnValue);
+
+            var readValueBlockChain = new InstructionBlockChain();
+            readValueBlockChain.Add(readValueBlock);
+            return readValueBlockChain;
         }
 
         public InstructionBlockChain CallAspectOnExit(NamedInstructionBlockChain createAspectInstance,

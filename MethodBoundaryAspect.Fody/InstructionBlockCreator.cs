@@ -243,10 +243,25 @@ namespace MethodBoundaryAspect.Fody
                 methodReference);
 
             Instruction assignReturnValueToVariableInstruction = null;
+            Instruction castReturnValueToCorrectType = null;
             if (returnValue != null)
             {
                 if (IsVoid(methodDefinition.ReturnType))
                     throw new InvalidOperationException("Method has no return value");
+
+                bool needsCast = true;
+                
+                for (TypeDefinition t = returnValue.VariableType.Resolve(); t != null && t.FullName != typeof(Object).FullName; t = t.BaseType?.Resolve())
+                {
+                    if (t.FullName == methodDefinition.ReturnType.FullName)
+                    {
+                        needsCast = false;
+                        break;
+                    }
+                }
+
+                if (needsCast)
+                    castReturnValueToCorrectType = _processor.Create(OpCodes.Unbox_Any, returnValue.VariableType);
 
                 assignReturnValueToVariableInstruction = _processor.Create(OpCodes.Stloc, returnValue);
             }
@@ -256,6 +271,8 @@ namespace MethodBoundaryAspect.Fody
                 instructions.Add(loadVariableInstruction);
             instructions.AddRange(loadArgumentsInstructions);
             instructions.Add(methodCallInstruction);
+            if (castReturnValueToCorrectType != null)
+                instructions.Add(castReturnValueToCorrectType);
             if (assignReturnValueToVariableInstruction != null)
                 instructions.Add(assignReturnValueToVariableInstruction);
             return instructions;
@@ -289,6 +306,69 @@ namespace MethodBoundaryAspect.Fody
                 return instructions;
             }
 
+            if (parameterType.FullName == typeof(Object).FullName && value is CustomAttributeArgument arg)
+            {
+                var valueType = _referenceFinder.GetTypeReference(arg.Value.GetType());
+                var instructions = LoadValueOnStack(valueType, arg.Value, module);
+                instructions.Add(_processor.Create(OpCodes.Box, valueType));
+                return instructions;
+            }
+
+            if (parameterType.IsArray && value is CustomAttributeArgument[] args)
+            {
+                var array = CreateVariable(parameterType);
+                var elementType = ((ArrayType)parameterType).ElementType;
+                var createArrayInstructions = new List<Instruction>()
+                {
+                    _processor.Create(OpCodes.Ldc_I4, args.Length),
+                    _processor.Create(OpCodes.Newarr, elementType),
+                    _processor.Create(OpCodes.Stloc, array)
+                };
+
+                OpCode stelem;
+                if (elementType.IsValueType)
+                {
+                    switch (elementType.MetadataType)
+                    {
+                        case MetadataType.Boolean:
+                        case MetadataType.Int32:
+                        case MetadataType.UInt32:
+                            stelem = OpCodes.Stelem_I4; break;
+                        case MetadataType.Byte:
+                        case MetadataType.SByte:
+                            stelem = OpCodes.Stelem_I1; break;
+                        case MetadataType.Char:
+                        case MetadataType.Int16:
+                        case MetadataType.UInt16:
+                            stelem = OpCodes.Stelem_I2; break;
+                        case MetadataType.Double:
+                            stelem = OpCodes.Stelem_R8; break;
+                        case MetadataType.Int64:
+                        case MetadataType.UInt64:
+                            stelem = OpCodes.Stelem_I8; break;
+                        case MetadataType.Single:
+                            stelem = OpCodes.Stelem_R4; break;
+                        default:
+                            throw new NotSupportedException("Parametertype: " + parameterType);
+                    }
+                }
+                else
+                    stelem = OpCodes.Stelem_Ref;
+                
+                for (int i = 0; i < args.Length; ++i)
+                {
+                    var parameter = args[i];
+                    createArrayInstructions.Add(_processor.Create(OpCodes.Ldloc, array));
+                    createArrayInstructions.Add(_processor.Create(OpCodes.Ldc_I4, i));
+                    createArrayInstructions.AddRange(LoadValueOnStack(elementType, parameter.Value, module));
+                    createArrayInstructions.Add(_processor.Create(stelem));
+                }
+
+                createArrayInstructions.Add(_processor.Create(OpCodes.Ldloc, array));
+
+                return createArrayInstructions;
+            }
+            
             throw new NotSupportedException("Parametertype: " + parameterType);
         }
 
