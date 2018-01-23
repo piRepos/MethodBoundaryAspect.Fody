@@ -119,5 +119,82 @@ namespace MethodBoundaryAspect.Fody.UnitTests
             // Assert
             result.Should().Be(true);
         }
+
+        static readonly Type TestClassType2 = typeof(ValidationClass2);
+
+        [Fact]
+        public void IfCompileTimeValidateHasCtorParam_ThenParamAppearsInCalculation()
+        {
+            // Arrange
+            const string testMethodName = "Method";
+            WeaveAssemblyMethodAndLoad(TestClassType2, testMethodName);
+
+            // Act
+            AssemblyLoader.InvokeMethod(TestClassType2.FullName, testMethodName);
+            var result = WasCalled();
+
+            // Assert
+            result.Should().Be(true);
+        }
+
+        [Fact]
+        public void IfCompileTimeValidateHasPropertySet_ThenPropertyAppearsInCalculation()
+        {
+            // Arrange
+            const string testMethodName = "Method2";
+            WeaveAssemblyMethodAndLoad(TestClassType2, testMethodName);
+
+            // Act
+            AssemblyLoader.InvokeMethod(TestClassType2.FullName, testMethodName);
+            var result = WasCalled();
+
+            // Assert
+            result.Should().Be(true);
+        }
+
+        [Fact]
+        public void IfCompileTimeValidateHasFieldSet_ThenFieldAppearsInCalculation()
+        {
+            // Arrange
+            const string testMethodName = "Method3";
+            WeaveAssemblyMethodAndLoad(TestClassType2, testMethodName);
+
+            // Act
+            AssemblyLoader.InvokeMethod(TestClassType2.FullName, testMethodName);
+            var result = WasCalled();
+
+            // Assert
+            result.Should().Be(true);
+        }
+
+        [Fact]
+        public void IfCompileTimeValidateHasArrayCtorParam_ThenArrayAppearsInCalculation()
+        {
+            // Arrange
+            const string testMethodName = "Method4";
+            WeaveAssemblyMethodAndLoad(TestClassType2, testMethodName);
+
+            // Act
+            AssemblyLoader.InvokeMethod(TestClassType2.FullName, testMethodName);
+            var result = WasCalled();
+
+            // Assert
+            result.Should().Be(true);
+        }
+
+        [Fact]
+        public void IfCompileTimeValidateHasArrayCtorParamAndDoesNotIntercept_ThenMethodIsNotIntercepted()
+        {
+            // Arrange
+            const string testMethodName = "Method5";
+            WeaveAssemblyMethodAndLoad(TestClassType2, testMethodName);
+
+            // Act
+            AssemblyLoader.InvokeMethod(TestClassType2.FullName, testMethodName);
+            var result = WasCalled();
+
+            // Assert
+            result.Should().Be(false);
+        }
     }
 }

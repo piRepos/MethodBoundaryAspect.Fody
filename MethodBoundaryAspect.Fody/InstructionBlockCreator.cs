@@ -101,10 +101,12 @@ namespace MethodBoundaryAspect.Fody
             int aspectCounter)
         {
             var typeDefinition = instanceTypeReference.Resolve();
-            var constructor = typeDefinition.Methods
-                .Where(x => x.IsConstructor)
-                .Where(x => !x.IsStatic)
-                .SingleOrDefault(x => x.Parameters.Count == (aspect == null ? 0 : aspect.Constructor.Parameters.Count));
+            var constructor = typeDefinition
+                .Methods
+                .SingleOrDefault(x => x.IsConstructor &&
+                                !x.IsStatic &&
+                                x.Parameters.Select(p => p.ParameterType)
+                                    .SequenceEqual(aspect == null ? new TypeReference[0] : aspect.ConstructorArguments.Select(a => a.Type)));
 
             if (constructor == null)
                 throw new InvalidOperationException(string.Format("Didn't found matching constructor on type '{0}'",
@@ -140,6 +142,22 @@ namespace MethodBoundaryAspect.Fody
                     loadSetConstValuesToAspect.AddRange(loadOnStackInstruction);
                     loadSetConstValuesToAspect.AddRange(assignVariableInstructionBlock.Instructions);
                     loadSetConstValuesToAspect.AddRange(setPropertyInstructionBlock.Instructions);
+                }
+
+                foreach (var field in aspect.Fields)
+                {
+                    var fieldCopy = field;
+
+                    var loadInstanceOnStackInstruction = _processor.Create(OpCodes.Ldloc, newInstance);
+                    var loadOnStackInstruction = LoadValueOnStack(fieldCopy.Argument.Type, fieldCopy.Argument.Value, module);
+                    var valueVariable = CreateVariable(fieldCopy.Argument.Type);
+
+                    var fieldRef = instanceTypeReference.Resolve().Fields.First(f => f.Name == fieldCopy.Name);
+                    var loadFieldInstructionBlock = _processor.Create(OpCodes.Stfld, fieldRef);
+
+                    loadSetConstValuesToAspect.Add(loadInstanceOnStackInstruction);
+                    loadSetConstValuesToAspect.AddRange(loadOnStackInstruction);
+                    loadSetConstValuesToAspect.Add(loadFieldInstructionBlock);
                 }
             }
 
@@ -377,6 +395,8 @@ namespace MethodBoundaryAspect.Fody
             if (parameterType.FullName == typeof(Object).FullName && value is CustomAttributeArgument arg)
             {
                 var valueType = _referenceFinder.GetTypeReference(arg.Value.GetType());
+                if (arg.Value.GetType() == typeof(TypeReference))
+                    valueType = _referenceFinder.GetTypeReference(typeof(Type));
                 var instructions = LoadValueOnStack(valueType, arg.Value, module);
                 instructions.Add(_processor.Create(OpCodes.Box, valueType));
                 return instructions;

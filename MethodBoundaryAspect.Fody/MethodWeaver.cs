@@ -1,6 +1,8 @@
 using MethodBoundaryAspect.Fody.Attributes;
 using Mono.Cecil;
 using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 
 namespace MethodBoundaryAspect.Fody
@@ -10,43 +12,30 @@ namespace MethodBoundaryAspect.Fody
         private NamedInstructionBlockChain _createArgumentsArray;
         private MethodBodyPatcher _methodBodyChanger;
         private bool _finished;
-        
+
         public int WeaveCounter { get; private set; }
-        
+
         static bool DetermineValidation(string methodName, string className, string aspectName,
             string[] methodParams, byte[] blob, string[] ctorParams)
         {
-            var typeInfo = Type.GetType(className);
-            if (typeInfo == null)
-                throw new InvalidOperationException(String.Format("Could not find type '{0}'.", className));
+            return false;
+        }
 
-            try
+        object[] GetRuntimeAttributeArgs(IEnumerable<CustomAttributeArgument> args)
+        {
+            return args.Select(GetRuntimeAttributeArg).ToArray();
+        }
+
+        object GetRuntimeAttributeArg(CustomAttributeArgument arg)
+        {
+            switch (arg.Value)
             {
-                Type[] parameters = methodParams.Select(Type.GetType).ToArray();
-                var methodInfo = typeInfo.GetMethod(methodName, parameters);
-
-                Type aspectType = Type.GetType(aspectName);
-                var ctorInfo = aspectType.GetConstructor(ctorParams.Select(Type.GetType).ToArray());
-                if (ctorInfo == null)
-                    throw new InvalidOperationException("Could not find constructor for aspect.");
-
-                var module = ModuleDefinition.CreateModule("Tmp.dll", ModuleKind.Dll);
-                TypeReference cecilType = module.ImportReference(aspectType);
-                MethodReference cecilCtor = cecilType.Resolve().Methods.FirstOrDefault(m =>
-                    m.Name == methodName &&
-                    m.Parameters.Select(p => p.ParameterType.FullName).SequenceEqual(ctorParams));
-
-                var att = new CustomAttribute(cecilCtor, blob);
-                object[] ctorArgs = att.ConstructorArguments.Select(arg => arg.Value).ToArray();
-                var aspect = Activator.CreateInstance(aspectType, ctorArgs) as OnMethodBoundaryAspect;
-                if (aspect == null)
-                    throw new InvalidOperationException("Could not create aspect.");
-
-                return aspect.CompileTimeValidate(methodInfo);
-            }
-            catch (Exception e)
-            {
-                throw new InvalidOperationException("Error while trying to compile-time validate.", e);
+                case CustomAttributeArgument[] array:
+                    return array.Select(GetRuntimeAttributeArg).ToArray();
+                case CustomAttributeArgument arg2:
+                    return GetRuntimeAttributeArg(arg2);
+                default:
+                    return arg.Value;
             }
         }
 
@@ -60,17 +49,59 @@ namespace MethodBoundaryAspect.Fody
         {
             if (overriddenAspectMethods == AspectMethods.None)
                 return;
-            
+
             if (overriddenAspectMethods.HasFlag(AspectMethods.CompileTimeValidate))
             {
                 AppDomain.CurrentDomain.Load(unweavedAssembly);
-                if (!DetermineValidation(method.Name,
-                    String.Format("{0}, {1}", type.FullName, type.Module.Assembly.Name.Name),
-                    String.Format("{0}, {1}", aspect.AttributeType.FullName, aspect.AttributeType.Module.Assembly.Name.Name),
-                    method.Parameters.Select(p => p.ParameterType.FullName).ToArray(),
-                    aspect.GetBlob(),
-                    aspect.Constructor.Parameters.Select(p => p.ParameterType.FullName).ToArray()))
-                    return;
+                string className = String.Format("{0}, {1}", type.FullName, type.Module.Assembly.Name.Name);
+                string methodName = method.Name;
+                string[] methodParams = method.Parameters.Select(p => p.ParameterType.FullName).ToArray();
+                byte[] blob = aspect.GetBlob();
+                string[] ctorParams = aspect.Constructor.Parameters.Select(p => p.ParameterType.FullName).ToArray();
+                string aspectName = String.Format("{0}, {1}", aspect.AttributeType.FullName, aspect.AttributeType.Module.Assembly.Name.Name);
+                
+                try
+                {
+                    var typeInfo = Type.GetType(className);
+                    if (typeInfo == null)
+                        throw new InvalidOperationException(String.Format("Could not find type '{0}'.", className));
+
+                    Type[] parameters = methodParams.Select(Type.GetType).ToArray();
+                    var methodInfo = typeInfo.GetMethod(methodName, parameters);
+
+                    Type aspectType = Type.GetType(aspectName);
+                    var ctorInfo = aspectType.GetConstructor(ctorParams.Select(Type.GetType).ToArray());
+                    if (ctorInfo == null)
+                        throw new InvalidOperationException("Could not find constructor for aspect.");
+                    
+                    object[] ctorArgs = GetRuntimeAttributeArgs(aspect.ConstructorArguments);
+                    var aspectInstance = Activator.CreateInstance(aspectType, ctorArgs) as OnMethodBoundaryAspect;
+                    if (aspectInstance == null)
+                        throw new InvalidOperationException("Could not create aspect.");
+
+                    foreach (var fieldSetter in aspect.Fields)
+                    {
+                        var field = aspectType.GetField(fieldSetter.Name);
+                        if (field == null)
+                            throw new InvalidOperationException(String.Format("Could not find field named {0}", fieldSetter.Name));
+                        field.SetValue(aspectInstance, fieldSetter.Argument.Value);
+                    }
+
+                    foreach (var propSetter in aspect.Properties)
+                    {
+                        var prop = aspectType.GetProperty(propSetter.Name);
+                        if (prop == null)
+                            throw new InvalidOperationException(String.Format("Could not find property named {0}", propSetter.Name));
+                        prop.SetValue(aspectInstance, propSetter.Argument.Value);
+                    }
+
+                    if (!aspectInstance.CompileTimeValidate(methodInfo))
+                        return;
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException("Error while trying to compile-time validate.", e);
+                }
             }
 
             var creator = new InstructionBlockChainCreator(method, aspect.AttributeType, moduleDefinition, WeaveCounter);

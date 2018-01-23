@@ -19,9 +19,29 @@ namespace MethodBoundaryAspect.Fody.UnitTests.TestAssembly.Aspects
 
         public override bool CompileTimeValidate(MethodBase method)
         {
+            if (_intercept == true || InterceptProperty == true || InterceptField == true)
+                return true;
             if (method.IsSpecialName && method.Name.StartsWith("get_"))
                 return true;
             return method.Name.Contains("X");
+        }
+
+        public ValidatedAspect() { }
+
+        bool? _intercept;
+
+        public ValidatedAspect(bool intercept)
+        {
+            _intercept = intercept;
+        }
+
+        public bool InterceptProperty { get; set; }
+
+        public bool InterceptField;
+
+        public ValidatedAspect(params object[] args)
+        {
+            _intercept = args.Length % 2 == 0;
         }
     }
 }
