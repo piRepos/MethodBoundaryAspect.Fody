@@ -170,7 +170,7 @@ namespace MethodBoundaryAspect.Fody
             var weavedAtLeastOneMethod = false;
             foreach (var method in type.Methods)
             {
-                if (!IsWeavableMethod(method))
+                if (!IsWeavableMethod(method, type))
                     continue;
 
                 Collection<CustomAttribute> methodMethodBoundaryAspects;
@@ -191,15 +191,63 @@ namespace MethodBoundaryAspect.Fody
                 if (aspectInfos.Count == 0)
                     continue;
 
-                weavedAtLeastOneMethod = WeaveMethod(
+                weavedAtLeastOneMethod |= WeaveMethod(
                     module,
                     method,
                     aspectInfos,
                     type);
-            }   
+            }
+
+            var classLevelAspectInfos = assemblyMethodBoundaryAspects
+                .Concat(classMethodBoundaryAspects)
+                .Where(IsMethodBoundaryAspect)
+                .Select(x => new AspectInfo(x))
+                .Where(x => x.ForceOverrides)
+                .ToList();
+
+            if (classLevelAspectInfos.Count != 0)
+                foreach (var baseVirtualMethod in GetPotentiallyOverridableMethods(type))
+                {
+                    if (!IsWeavableMethod(baseVirtualMethod, type))
+                        continue;
+
+                    var @override = new MethodDefinition(baseVirtualMethod.Name, baseVirtualMethod.Attributes, baseVirtualMethod.ReturnType);
+
+                    foreach (var p in baseVirtualMethod.GenericParameters)
+                        @override.GenericParameters.Add(new GenericParameter(p));
+
+                    foreach (var p in baseVirtualMethod.Parameters)
+                        @override.Parameters.Add(new ParameterDefinition(p.ParameterType));
+
+                    var il = @override.Body.GetILProcessor();
+                    il.Emit(OpCodes.Ldarg_0);
+                    for (int i = 0; i < baseVirtualMethod.Parameters.Count; ++i)
+                        il.Emit(OpCodes.Ldarg, i + 1);
+                    il.Emit(OpCodes.Call, baseVirtualMethod);
+                    il.Emit(OpCodes.Ret);
+
+                    if (WeaveMethod(module, @override, classLevelAspectInfos, type))
+                    {
+                        type.Methods.Add(@override);
+                        @override.Overrides.Add(baseVirtualMethod);
+                        weavedAtLeastOneMethod = true;
+                    }
+                }
 
             if (weavedAtLeastOneMethod)
                 TotalWeavedTypes++;
+        }
+
+        private IEnumerable<MethodDefinition> GetPotentiallyOverridableMethods(TypeReference type)
+        {
+            for (TypeDefinition typeDef = type.Resolve()?.BaseType?.Resolve(); typeDef != null && typeDef.FullName != typeof(Object).FullName; typeDef = typeDef.BaseType.Resolve())
+            {
+                foreach (var method in typeDef.Methods)
+                {
+                    if (method.IsVirtual && !method.IsFinal && !method.HasOverrides)
+                        yield return method.Resolve();
+                }
+            }
         }
 
         private bool WeaveMethod(
@@ -299,7 +347,7 @@ namespace MethodBoundaryAspect.Fody
             return IsMethodBoundaryAspect(customAttribute.AttributeType.Resolve());
         }
 
-        private bool IsWeavableMethod(MethodDefinition method)
+        private bool IsWeavableMethod(MethodDefinition method, TypeReference type)
         {
             var fullName = method.DeclaringType.FullName;
             var name = method.Name;
@@ -307,7 +355,7 @@ namespace MethodBoundaryAspect.Fody
             if (IsIgnoredByWeaving(method))
                 return false;
 
-            if (IsUserFiltered(fullName, name))
+            if (IsUserFiltered(fullName, name, type))
                 return false;
 
             return !(method.IsAbstract // abstract or interface method
@@ -316,13 +364,12 @@ namespace MethodBoundaryAspect.Fody
                      || method.IsPInvokeImpl); // extern
         }
 
-        private bool IsUserFiltered(string fullName, string name)
+        private bool IsUserFiltered(string fullName, string name, TypeReference type)
         {
             if (_classFilters.Any())
             {
                 var classFullName = fullName;
-                var matched = _classFilters.Contains(classFullName);
-                if (!matched)
+                if (!_classFilters.Contains(classFullName) && !_classFilters.Contains(type.FullName))
                     return true;
             }
 

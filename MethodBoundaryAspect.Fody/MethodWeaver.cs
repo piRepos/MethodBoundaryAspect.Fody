@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Reflection;
 
 namespace MethodBoundaryAspect.Fody
 {
@@ -52,24 +53,20 @@ namespace MethodBoundaryAspect.Fody
 
             if (overriddenAspectMethods.HasFlag(AspectMethods.CompileTimeValidate))
             {
-                AppDomain.CurrentDomain.Load(unweavedAssembly);
-                string className = String.Format("{0}, {1}", type.FullName, type.Module.Assembly.Name.Name);
+                var asm = AppDomain.CurrentDomain.Load(unweavedAssembly);
                 string methodName = method.Name;
                 string[] methodParams = method.Parameters.Select(p => p.ParameterType.FullName).ToArray();
-                byte[] blob = aspect.GetBlob();
                 string[] ctorParams = aspect.Constructor.Parameters.Select(p => p.ParameterType.FullName).ToArray();
-                string aspectName = String.Format("{0}, {1}", aspect.AttributeType.FullName, aspect.AttributeType.Module.Assembly.Name.Name);
-                
                 try
                 {
-                    var typeInfo = Type.GetType(className);
+                    var typeInfo = asm.GetTypes().FirstOrDefault(t => t.FullName == type.FullName);
                     if (typeInfo == null)
-                        throw new InvalidOperationException(String.Format("Could not find type '{0}'.", className));
+                        throw new InvalidOperationException(String.Format("Could not find type '{0}'.", type.FullName));
 
                     Type[] parameters = methodParams.Select(Type.GetType).ToArray();
-                    var methodInfo = typeInfo.GetMethod(methodName, parameters);
+                    var methodInfo = typeInfo.GetMethod(methodName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance, null, parameters, new ParameterModifier[0]);
 
-                    Type aspectType = Type.GetType(aspectName);
+                    Type aspectType = asm.GetTypes().FirstOrDefault(t => t.FullName == aspect.AttributeType.FullName);
                     var ctorInfo = aspectType.GetConstructor(ctorParams.Select(Type.GetType).ToArray());
                     if (ctorInfo == null)
                         throw new InvalidOperationException("Could not find constructor for aspect.");

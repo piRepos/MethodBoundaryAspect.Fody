@@ -62,6 +62,16 @@ namespace MethodBoundaryAspect.Fody.UnitTests
             WeaveAssemblyAndVerifyAndLoad(type, null, propertyName);
         }
 
+        protected void WeaveAssemblyAndLoad(string assemblyPath)
+        {
+            Weaver = new ModuleWeaver();
+
+            WeavedAssemblyPath = assemblyPath;
+            Weaver.Weave(assemblyPath);
+            RunPeVerify();
+            LoadWeavedAssembly();
+        }
+
         private void WeaveAssemblyAndVerifyAndLoad(Type type, string methodName, string propertyName)
         {
             Weaver = new ModuleWeaver();
