@@ -6,11 +6,11 @@ namespace MethodBoundaryAspect.Fody
 {
     public class ReferenceFinder
     {
-        private readonly ModuleDefinition _moduleDefinition;
+        public readonly ModuleDefinition Module;
 
         public ReferenceFinder(ModuleDefinition moduleDefinition)
         {
-            _moduleDefinition = moduleDefinition;
+            Module = moduleDefinition;
         }
 
         public MethodReference GetMethodReference(Type declaringType, Func<MethodDefinition, bool> predicate)
@@ -31,12 +31,12 @@ namespace MethodBoundaryAspect.Fody
                     : typeDefinition.BaseType.Resolve();
             } while (methodDefinition == null && typeDefinition != null);
 
-            return _moduleDefinition.ImportReference(methodDefinition);
+            return Module.ImportReference(methodDefinition);
         }
 
         public TypeReference GetTypeReference(Type type)
         {
-            return _moduleDefinition.ImportReference(type);
+            return Module.ImportReference(type);
         }
     }
 }
