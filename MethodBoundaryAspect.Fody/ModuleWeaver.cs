@@ -168,7 +168,7 @@ namespace MethodBoundaryAspect.Fody
                 .ToDictionary(x => x.SetMethod);
 
             var weavedAtLeastOneMethod = false;
-            foreach (var method in type.Methods)
+            foreach (var method in type.Methods.ToList())
             {
                 if (!IsWeavableMethod(method, type))
                     continue;

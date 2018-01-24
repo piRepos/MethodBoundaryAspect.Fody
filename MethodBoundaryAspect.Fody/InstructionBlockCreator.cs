@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Mono.Cecil.Rocks;
 
 namespace MethodBoundaryAspect.Fody
 {
@@ -150,8 +151,7 @@ namespace MethodBoundaryAspect.Fody
 
                     var loadInstanceOnStackInstruction = _processor.Create(OpCodes.Ldloc, newInstance);
                     var loadOnStackInstruction = LoadValueOnStack(fieldCopy.Argument.Type, fieldCopy.Argument.Value, module);
-                    var valueVariable = CreateVariable(fieldCopy.Argument.Type);
-
+                    
                     var fieldRef = instanceTypeReference.Resolve().Fields.First(f => f.Name == fieldCopy.Name);
                     var loadFieldInstructionBlock = _processor.Create(OpCodes.Stfld, fieldRef);
 
@@ -266,19 +266,8 @@ namespace MethodBoundaryAspect.Fody
             {
                 if (IsVoid(methodDefinition.ReturnType))
                     throw new InvalidOperationException("Method has no return value");
-
-                bool needsCast = true;
                 
-                for (TypeDefinition t = returnValue.VariableType.Resolve(); t != null && t.FullName != typeof(Object).FullName; t = t.BaseType?.Resolve())
-                {
-                    if (t.FullName == methodDefinition.ReturnType.FullName)
-                    {
-                        needsCast = false;
-                        break;
-                    }
-                }
-
-                if (needsCast)
+                if (!methodDefinition.ReturnType.IsAssignableTo(returnValue.VariableType))
                     castReturnValueToCorrectType = _processor.Create(OpCodes.Unbox_Any, returnValue.VariableType);
 
                 assignReturnValueToVariableInstruction = _processor.Create(OpCodes.Stloc, returnValue);
@@ -312,53 +301,7 @@ namespace MethodBoundaryAspect.Fody
                 instructions.Add(_processor.Create(OpCodes.Ldloc, argsAsReturned));
                 instructions.Add(_processor.Create(OpCodes.Ldc_I4, i));
                 instructions.Add(_processor.Create(OpCodes.Ldelem_Ref));
-
-                if (p.ParameterType.IsByReference)
-                {
-                    var pureType = new TypeReference(p.ParameterType.Namespace, p.ParameterType.Name.Trim('&'), p.ParameterType.Module, p.ParameterType.Scope, p.ParameterType.IsValueType);
-                    instructions.Add(_processor.Create(OpCodes.Unbox_Any, pureType));
-                    OpCode st;
-                    var resolvedPureType = pureType.Resolve();
-                    if (resolvedPureType.IsValueType)
-                    {
-                        switch (resolvedPureType.MetadataType)
-                        {
-                            case MetadataType.Boolean:
-                            case MetadataType.Int32:
-                            case MetadataType.UInt32:
-                                st = OpCodes.Stind_I4; break;
-                            case MetadataType.Byte:
-                            case MetadataType.SByte:
-                                st = OpCodes.Stind_I1; break;
-                            case MetadataType.Char:
-                            case MetadataType.Int16:
-                            case MetadataType.UInt16:
-                                st = OpCodes.Stind_I2; break;
-                            case MetadataType.Double:
-                                st = OpCodes.Stind_R8; break;
-                            case MetadataType.Int64:
-                            case MetadataType.UInt64:
-                                st = OpCodes.Stind_I8; break;
-                            case MetadataType.Single:
-                                st = OpCodes.Stind_R4; break;
-                            default:
-                                if (resolvedPureType.IsEnum)
-                                    st = OpCodes.Stind_I4;
-                                else
-                                    st = OpCodes.Stobj;
-                                break;
-                        }
-                    }
-                    else
-                        st = OpCodes.Stind_Ref;
-
-                    instructions.Add(_processor.Create(st));
-                }
-                else
-                {
-                    instructions.Add(_processor.Create(OpCodes.Unbox_Any, p.ParameterType));
-                    instructions.Add(_processor.Create(OpCodes.Starg_S, p));
-                }
+                instructions.AddRange(CecilExtensions.StoreTypeInArgument(_processor, p));
             }
             
             return new InstructionBlock("ReadParameterArray: ", instructions);
@@ -415,31 +358,7 @@ namespace MethodBoundaryAspect.Fody
 
                 OpCode stelem;
                 if (elementType.IsValueType)
-                {
-                    switch (elementType.MetadataType)
-                    {
-                        case MetadataType.Boolean:
-                        case MetadataType.Int32:
-                        case MetadataType.UInt32:
-                            stelem = OpCodes.Stelem_I4; break;
-                        case MetadataType.Byte:
-                        case MetadataType.SByte:
-                            stelem = OpCodes.Stelem_I1; break;
-                        case MetadataType.Char:
-                        case MetadataType.Int16:
-                        case MetadataType.UInt16:
-                            stelem = OpCodes.Stelem_I2; break;
-                        case MetadataType.Double:
-                            stelem = OpCodes.Stelem_R8; break;
-                        case MetadataType.Int64:
-                        case MetadataType.UInt64:
-                            stelem = OpCodes.Stelem_I8; break;
-                        case MetadataType.Single:
-                            stelem = OpCodes.Stelem_R4; break;
-                        default:
-                            throw new NotSupportedException("Parametertype: " + parameterType);
-                    }
-                }
+                    stelem = elementType.MetadataType.GetStElemCode();
                 else
                     stelem = OpCodes.Stelem_Ref;
                 
@@ -636,6 +555,48 @@ namespace MethodBoundaryAspect.Fody
         private static bool IsVoid(TypeReference type)
         {
             return type.Name == VoidType;
+        }
+
+        public FieldDefinition StoreMethodInfoInStaticField(MethodReference method, TypeReference type)
+        {
+            var typeDef = type.Resolve();
+            int i;
+            for (i = 1; typeDef.Fields.FirstOrDefault(f => f.Name == $"<{method.Name}>k_methodField_{i}") != null; ++i)
+            { }
+
+            var field = new FieldDefinition($"<{method.Name}>k_methodField_{i}", FieldAttributes.Static | FieldAttributes.Private,
+                _referenceFinder.GetTypeReference(typeof(System.Reflection.MethodInfo)));
+
+            var staticCtor = EnsureStaticConstructor(typeDef);
+
+            var processor = staticCtor.Body.GetILProcessor();
+            var first = staticCtor.Body.Instructions.First();
+            
+            var getMethodFromHandle = _referenceFinder.GetMethodReference(typeof(System.Reflection.MethodBase), md => md.Name == "GetMethodFromHandle" && md.Parameters.Count == 2);
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Ldtoken, method));
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Ldtoken, type));
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Call, getMethodFromHandle));
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Castclass, _referenceFinder.GetTypeReference(typeof(System.Reflection.MethodInfo))));
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Stsfld, field));
+
+            typeDef.Fields.Add(field);
+
+            return field.Resolve();
+        }
+
+        public MethodDefinition EnsureStaticConstructor(TypeDefinition type)
+        {
+            var staticCtor = type.GetStaticConstructor();
+            if (staticCtor == null)
+            {
+                var voidRef = type.Module.TypeSystem.Void;
+                staticCtor = new MethodDefinition(".cctor", MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName | MethodAttributes.Static, voidRef);
+                var il = staticCtor.Body.GetILProcessor();
+                il.Emit(OpCodes.Ret);
+                type.Methods.Add(staticCtor);
+            }
+            staticCtor.Body.InitLocals = true;
+            return staticCtor;
         }
     }
 }

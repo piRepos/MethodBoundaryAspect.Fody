@@ -111,10 +111,10 @@ namespace MethodBoundaryAspect.Fody
             if (WeaveCounter == 0)
                 _createArgumentsArray = creator.CreateMethodArgumentsArray();
 
-            var createMethodExecutionArgsInstance = creator.CreateMethodExecutionArgsInstance(_createArgumentsArray);
+            var createMethodExecutionArgsInstance = creator.CreateMethodExecutionArgsInstance(_createArgumentsArray, type);
             _methodBodyChanger.AddCreateMethodExecutionArgs(createMethodExecutionArgsInstance);
 
-            var createAspectInstance = creator.CreateAspectInstance(aspect);
+            var createAspectInstance = creator.LoadAspectInstance(aspect, type);
             if (overriddenAspectMethods.HasFlag(AspectMethods.OnEntry))
             {
                 var callAspectOnEntry = creator.CallAspectOnEntry(createAspectInstance,
