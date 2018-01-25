@@ -8,7 +8,8 @@ namespace MethodBoundaryAspect.Fody.Attributes
     {
         public virtual void OnEntry(MethodExecutionArgs arg)
         {
-        }
+			arg.ExecuteBody = true;
+		}
 
         public virtual void OnExit(MethodExecutionArgs arg)
         {

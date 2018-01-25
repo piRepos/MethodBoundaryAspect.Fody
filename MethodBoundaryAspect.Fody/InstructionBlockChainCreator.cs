@@ -247,7 +247,21 @@ namespace MethodBoundaryAspect.Fody
             return callAspectOnEntryBlockChain;
         }
 
-        public InstructionBlockChain ReadReturnValue(NamedInstructionBlockChain newMethodExecutionArgsBlockChain,
+		public InstructionBlockChain LoadExecuteBodyVariable(NamedInstructionBlockChain newMethodExecutionArgsBlockChain, out NamedInstructionBlockChain executeBodyVariable)
+		{
+			var getExecuteBody = _referenceFinder.GetMethodReference(newMethodExecutionArgsBlockChain.TypeReference,
+				md => md.Name == "get_ExecuteBody");
+
+			var executeBodyVar = _creator.CreateVariable(getExecuteBody.ReturnType);
+			executeBodyVariable = new NamedInstructionBlockChain(executeBodyVar, getExecuteBody.ReturnType);
+			var block = _creator.CallInstanceMethod(newMethodExecutionArgsBlockChain.Variable, executeBodyVariable.Variable, getExecuteBody);
+
+			var getExecuteBodyBlockChain = new InstructionBlockChain();
+			getExecuteBodyBlockChain.Add(block);
+			return getExecuteBodyBlockChain;
+		}
+
+		public InstructionBlockChain ReadReturnValue(NamedInstructionBlockChain newMethodExecutionArgsBlockChain,
             NamedInstructionBlockChain returnValue)
         {
             if (!_creator.HasReturnValue())

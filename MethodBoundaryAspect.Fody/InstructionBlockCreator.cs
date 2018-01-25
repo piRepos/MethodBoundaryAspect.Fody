@@ -197,6 +197,13 @@ namespace MethodBoundaryAspect.Fody
                 _processor.Create(OpCodes.Ldloc, variable));
         }
 
+		public InstructionBlock JumpIfFalse(Instruction target)
+		{
+			return new InstructionBlock(
+				"JumpIfFalse",
+				_processor.Create(OpCodes.Brfalse_S, target));
+		}
+
         public InstructionBlock CallVoidInstanceMethod(
             VariableDefinition callInstanceVariable,
             MethodReference methodReference,

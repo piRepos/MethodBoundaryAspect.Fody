@@ -119,7 +119,9 @@ namespace MethodBoundaryAspect.Fody
             {
                 var callAspectOnEntry = creator.CallAspectOnEntry(createAspectInstance,
                     createMethodExecutionArgsInstance);
-                _methodBodyChanger.AddOnEntryCall(createAspectInstance, callAspectOnEntry);
+				var loadExecuteBodyVar = creator.LoadExecuteBodyVariable(createMethodExecutionArgsInstance, out NamedInstructionBlockChain executeBodyVar);
+				executeBodyVar = creator.LoadValueOnStack(executeBodyVar);
+                _methodBodyChanger.AddOnEntryCall(createAspectInstance, callAspectOnEntry, loadExecuteBodyVar, executeBodyVar);
             }
 
             if (overriddenAspectMethods.HasFlag(AspectMethods.OnExit))
