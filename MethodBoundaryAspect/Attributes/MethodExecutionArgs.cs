@@ -11,5 +11,6 @@ namespace MethodBoundaryAspect.Fody.Attributes
         public object ReturnValue { get; set; }
         public Exception Exception { get; set; }
         public object MethodExecutionTag { get; set; }
+		public bool ExecuteBody { get; set; }
     }
 }

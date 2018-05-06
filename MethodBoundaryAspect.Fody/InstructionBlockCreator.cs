@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Mono.Cecil.Rocks;
 
 namespace MethodBoundaryAspect.Fody
 {
@@ -101,10 +102,12 @@ namespace MethodBoundaryAspect.Fody
             int aspectCounter)
         {
             var typeDefinition = instanceTypeReference.Resolve();
-            var constructor = typeDefinition.Methods
-                .Where(x => x.IsConstructor)
-                .Where(x => !x.IsStatic)
-                .SingleOrDefault(x => x.Parameters.Count == (aspect == null ? 0 : aspect.Constructor.Parameters.Count));
+            var constructor = typeDefinition
+                .Methods
+                .SingleOrDefault(x => x.IsConstructor &&
+                                !x.IsStatic &&
+                                x.Parameters.Select(p => p.ParameterType)
+                                    .SequenceEqual(aspect == null ? new TypeReference[0] : aspect.ConstructorArguments.Select(a => a.Type)));
 
             if (constructor == null)
                 throw new InvalidOperationException(string.Format("Didn't found matching constructor on type '{0}'",
@@ -140,6 +143,21 @@ namespace MethodBoundaryAspect.Fody
                     loadSetConstValuesToAspect.AddRange(loadOnStackInstruction);
                     loadSetConstValuesToAspect.AddRange(assignVariableInstructionBlock.Instructions);
                     loadSetConstValuesToAspect.AddRange(setPropertyInstructionBlock.Instructions);
+                }
+
+                foreach (var field in aspect.Fields)
+                {
+                    var fieldCopy = field;
+
+                    var loadInstanceOnStackInstruction = _processor.Create(OpCodes.Ldloc, newInstance);
+                    var loadOnStackInstruction = LoadValueOnStack(fieldCopy.Argument.Type, fieldCopy.Argument.Value, module);
+                    
+                    var fieldRef = instanceTypeReference.Resolve().Fields.First(f => f.Name == fieldCopy.Name);
+                    var loadFieldInstructionBlock = _processor.Create(OpCodes.Stfld, fieldRef);
+
+                    loadSetConstValuesToAspect.Add(loadInstanceOnStackInstruction);
+                    loadSetConstValuesToAspect.AddRange(loadOnStackInstruction);
+                    loadSetConstValuesToAspect.Add(loadFieldInstructionBlock);
                 }
             }
 
@@ -178,6 +196,13 @@ namespace MethodBoundaryAspect.Fody
                 "PushValueOnStack",
                 _processor.Create(OpCodes.Ldloc, variable));
         }
+
+		public InstructionBlock JumpIfFalse(Instruction target)
+		{
+			return new InstructionBlock(
+				"JumpIfFalse",
+				_processor.Create(OpCodes.Brfalse_S, target));
+		}
 
         public InstructionBlock CallVoidInstanceMethod(
             VariableDefinition callInstanceVariable,
@@ -243,10 +268,14 @@ namespace MethodBoundaryAspect.Fody
                 methodReference);
 
             Instruction assignReturnValueToVariableInstruction = null;
+            Instruction castReturnValueToCorrectType = null;
             if (returnValue != null)
             {
                 if (IsVoid(methodDefinition.ReturnType))
                     throw new InvalidOperationException("Method has no return value");
+                
+                if (!methodDefinition.ReturnType.IsAssignableTo(returnValue.VariableType))
+                    castReturnValueToCorrectType = _processor.Create(OpCodes.Unbox_Any, returnValue.VariableType);
 
                 assignReturnValueToVariableInstruction = _processor.Create(OpCodes.Stloc, returnValue);
             }
@@ -256,9 +285,33 @@ namespace MethodBoundaryAspect.Fody
                 instructions.Add(loadVariableInstruction);
             instructions.AddRange(loadArgumentsInstructions);
             instructions.Add(methodCallInstruction);
+            if (castReturnValueToCorrectType != null)
+                instructions.Add(castReturnValueToCorrectType);
             if (assignReturnValueToVariableInstruction != null)
                 instructions.Add(assignReturnValueToVariableInstruction);
             return instructions;
+        }
+
+        public InstructionBlock ReadParameterArray(VariableDefinition executionArgs)
+        {
+            var instructions = new List<Instruction>();
+
+            var argsAsReturned = CreateVariable(_referenceFinder.GetTypeReference(typeof(Object[])));
+            instructions.AddRange(CreateInstanceMethodCallInstructions(executionArgs, argsAsReturned,
+                _referenceFinder.GetMethodReference(executionArgs.VariableType, md => md.Name == "get_Arguments")));
+            
+            for (int i = 0; i < _method.Parameters.Count; ++i)
+            {
+                var p = _method.Parameters[i];
+                if (p.ParameterType.IsByReference)
+                    instructions.Add(_processor.Create(OpCodes.Ldarg, i + 1));
+                instructions.Add(_processor.Create(OpCodes.Ldloc, argsAsReturned));
+                instructions.Add(_processor.Create(OpCodes.Ldc_I4, i));
+                instructions.Add(_processor.Create(OpCodes.Ldelem_Ref));
+                instructions.AddRange(CecilExtensions.StoreTypeInArgument(_processor, p));
+            }
+            
+            return new InstructionBlock("ReadParameterArray: ", instructions);
         }
 
         private IList<Instruction> LoadValueOnStack(TypeReference parameterType, object value, ModuleDefinition module)
@@ -289,6 +342,47 @@ namespace MethodBoundaryAspect.Fody
                 return instructions;
             }
 
+            if (parameterType.FullName == typeof(Object).FullName && value is CustomAttributeArgument arg)
+            {
+                var valueType = _referenceFinder.GetTypeReference(arg.Value.GetType());
+                if (arg.Value.GetType() == typeof(TypeReference))
+                    valueType = _referenceFinder.GetTypeReference(typeof(Type));
+                var instructions = LoadValueOnStack(valueType, arg.Value, module);
+                instructions.Add(_processor.Create(OpCodes.Box, valueType));
+                return instructions;
+            }
+
+            if (parameterType.IsArray && value is CustomAttributeArgument[] args)
+            {
+                var array = CreateVariable(parameterType);
+                var elementType = ((ArrayType)parameterType).ElementType;
+                var createArrayInstructions = new List<Instruction>()
+                {
+                    _processor.Create(OpCodes.Ldc_I4, args.Length),
+                    _processor.Create(OpCodes.Newarr, elementType),
+                    _processor.Create(OpCodes.Stloc, array)
+                };
+
+                OpCode stelem;
+                if (elementType.IsValueType)
+                    stelem = elementType.MetadataType.GetStElemCode();
+                else
+                    stelem = OpCodes.Stelem_Ref;
+                
+                for (int i = 0; i < args.Length; ++i)
+                {
+                    var parameter = args[i];
+                    createArrayInstructions.Add(_processor.Create(OpCodes.Ldloc, array));
+                    createArrayInstructions.Add(_processor.Create(OpCodes.Ldc_I4, i));
+                    createArrayInstructions.AddRange(LoadValueOnStack(elementType, parameter.Value, module));
+                    createArrayInstructions.Add(_processor.Create(stelem));
+                }
+
+                createArrayInstructions.Add(_processor.Create(OpCodes.Ldloc, array));
+
+                return createArrayInstructions;
+            }
+            
             throw new NotSupportedException("Parametertype: " + parameterType);
         }
 
@@ -468,6 +562,48 @@ namespace MethodBoundaryAspect.Fody
         private static bool IsVoid(TypeReference type)
         {
             return type.Name == VoidType;
+        }
+
+        public FieldDefinition StoreMethodInfoInStaticField(MethodReference method, TypeReference type)
+        {
+            var typeDef = type.Resolve();
+            int i;
+            for (i = 1; typeDef.Fields.FirstOrDefault(f => f.Name == $"<{method.Name}>k_methodField_{i}") != null; ++i)
+            { }
+
+            var field = new FieldDefinition($"<{method.Name}>k_methodField_{i}", FieldAttributes.Static | FieldAttributes.Private,
+                _referenceFinder.GetTypeReference(typeof(System.Reflection.MethodInfo)));
+
+            var staticCtor = EnsureStaticConstructor(typeDef);
+
+            var processor = staticCtor.Body.GetILProcessor();
+            var first = staticCtor.Body.Instructions.First();
+            
+            var getMethodFromHandle = _referenceFinder.GetMethodReference(typeof(System.Reflection.MethodBase), md => md.Name == "GetMethodFromHandle" && md.Parameters.Count == 2);
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Ldtoken, method));
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Ldtoken, type));
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Call, getMethodFromHandle));
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Castclass, _referenceFinder.GetTypeReference(typeof(System.Reflection.MethodInfo))));
+            processor.InsertBefore(first, Instruction.Create(OpCodes.Stsfld, field));
+
+            typeDef.Fields.Add(field);
+
+            return field.Resolve();
+        }
+
+        public MethodDefinition EnsureStaticConstructor(TypeDefinition type)
+        {
+            var staticCtor = type.GetStaticConstructor();
+            if (staticCtor == null)
+            {
+                var voidRef = type.Module.TypeSystem.Void;
+                staticCtor = new MethodDefinition(".cctor", MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName | MethodAttributes.Static, voidRef);
+                var il = staticCtor.Body.GetILProcessor();
+                il.Emit(OpCodes.Ret);
+                type.Methods.Add(staticCtor);
+            }
+            staticCtor.Body.InitLocals = true;
+            return staticCtor;
         }
     }
 }

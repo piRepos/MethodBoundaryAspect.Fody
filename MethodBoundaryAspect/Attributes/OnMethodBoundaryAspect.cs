@@ -8,7 +8,8 @@ namespace MethodBoundaryAspect.Fody.Attributes
     {
         public virtual void OnEntry(MethodExecutionArgs arg)
         {
-        }
+			arg.ExecuteBody = true;
+		}
 
         public virtual void OnExit(MethodExecutionArgs arg)
         {
@@ -20,7 +21,7 @@ namespace MethodBoundaryAspect.Fody.Attributes
 
         public virtual bool CompileTimeValidate(MethodBase method)
         {
-            throw new NotImplementedException("TODO!");
+            return true;
         }
     }
 }

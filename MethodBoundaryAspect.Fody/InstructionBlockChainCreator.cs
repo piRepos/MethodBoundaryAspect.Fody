@@ -1,7 +1,10 @@
+using MethodBoundaryAspect.Attributes;
+using MethodBoundaryAspect.Fody.Ordering;
+using Mono.Cecil;
+using Mono.Cecil.Cil;
 using System;
 using System.Linq;
 using System.Reflection;
-using Mono.Cecil;
 
 namespace MethodBoundaryAspect.Fody
 {
@@ -34,11 +37,11 @@ namespace MethodBoundaryAspect.Fody
         public NamedInstructionBlockChain CreateMethodArgumentsArray()
         {
             //  argument values
-            var argumentsTypeReference = _referenceFinder.GetTypeReference(typeof (object[]));
+            var argumentsTypeReference = _referenceFinder.GetTypeReference(typeof(object[]));
             var argumentsArrayVariable = _creator.CreateVariable(argumentsTypeReference);
             var createObjectArrayWithMethodArgumentsBlock =
                 _creator.CreateObjectArrayWithMethodArguments(argumentsArrayVariable,
-                    _referenceFinder.GetTypeReference(typeof (object)));
+                    _referenceFinder.GetTypeReference(typeof(object)));
 
             var blockChain = new NamedInstructionBlockChain(argumentsArrayVariable,
                 argumentsTypeReference);
@@ -46,7 +49,7 @@ namespace MethodBoundaryAspect.Fody
             return blockChain;
         }
 
-        public NamedInstructionBlockChain CreateMethodExecutionArgsInstance(NamedInstructionBlockChain argumentsArrayChain)
+        public NamedInstructionBlockChain CreateMethodExecutionArgsInstance(NamedInstructionBlockChain argumentsArrayChain, TypeReference weavingType)
         {
             // instance value
             var objectType = _referenceFinder.GetTypeReference(typeof(object));
@@ -61,7 +64,7 @@ namespace MethodBoundaryAspect.Fody
             var methodExecutionArgsVariable = _creator.CreateVariable(methodExecutionArgsTypeRef);
             var newObjectMethodExecutionArgsBlock = _creator.NewObject(
                 methodExecutionArgsVariable,
-                methodExecutionArgsTypeRef, 
+                methodExecutionArgsTypeRef,
                 _moduleDefinition,
                 _aspectCounter);
 
@@ -79,11 +82,12 @@ namespace MethodBoundaryAspect.Fody
             var callSetArgumentsBlock = _creator.CallVoidInstanceMethod(methodExecutionArgsVariable,
                 methodExecutionArgsSetArgumentsMethodRef, argumentsArrayChain.Variable);
 
-            var methodBaseTypeRef = _referenceFinder.GetTypeReference(typeof (MethodBase));
-            var methodBaseVariable = _creator.CreateVariable(methodBaseTypeRef);
-            var methodBaseGetCurrentMethod = _referenceFinder.GetMethodReference(methodBaseTypeRef,
-                md => md.Name == "GetCurrentMethod");
-            var callGetCurrentMethodBlock = _creator.CallStaticMethod(methodBaseGetCurrentMethod, methodBaseVariable);
+            var methodInfoField = _creator.StoreMethodInfoInStaticField(_method, weavingType);
+            var methodBaseVariable = _creator.CreateVariable(_referenceFinder.GetTypeReference(typeof(MethodInfo)));
+
+            var callGetCurrentMethodBlock = new InstructionBlock("CallGetCurrentMethod: ",
+                Instruction.Create(OpCodes.Ldsfld, methodInfoField),
+                Instruction.Create(OpCodes.Stloc, methodBaseVariable));
 
             var methodExecutionArgsSetMethodBaseMethodRef =
                 _referenceFinder.GetMethodReference(methodExecutionArgsTypeRef, md => md.Name == "set_Method");
@@ -105,15 +109,52 @@ namespace MethodBoundaryAspect.Fody
             return newMethodExectionArgsBlockChain;
         }
 
-        public NamedInstructionBlockChain CreateAspectInstance(CustomAttribute aspect)
+        public NamedInstructionBlockChain LoadAspectInstance(CustomAttribute aspect, TypeReference type)
         {
+            var caching = aspect.AttributeType.Resolve().CustomAttributes.FirstOrDefault(a => a.AttributeType.FullName == typeof(AspectCachingAttribute).FullName);
+
+            Caching cachingLevel = Caching.None;
+            if (caching != null)
+                cachingLevel = (Caching)caching.ConstructorArguments.First().Value;
+
             var aspectTypeReference = _moduleDefinition.ImportReference(_aspectTypeDefinition);
             var aspectVariable = _creator.CreateVariable(aspectTypeReference);
-            var newObjectAspectBlock = _creator.NewObject(aspectVariable, aspectTypeReference, _moduleDefinition, aspect, _aspectCounter);
 
-            var newObjectAspectBlockChain = new NamedInstructionBlockChain(aspectVariable, aspectTypeReference);
-            newObjectAspectBlockChain.Add(newObjectAspectBlock);
-            return newObjectAspectBlockChain;
+            if (cachingLevel == Caching.StaticByMethod)
+            {
+                var typeDef = type.Resolve();
+                int i;
+                string nameFactory(int index) => $"<{_method.Name}>k_aspectField_{index}";
+                bool isNameTaken(int index) => typeDef.Fields.FirstOrDefault(f => f.Name == nameFactory(index)) != null;
+                for (i = 1; isNameTaken(i); ++i) { }
+
+                var field = new FieldDefinition(nameFactory(i), Mono.Cecil.FieldAttributes.Static | Mono.Cecil.FieldAttributes.Private, aspectTypeReference);
+                var staticCtor = _creator.EnsureStaticConstructor(typeDef);
+                var processor = staticCtor.Body.GetILProcessor();
+                var first = staticCtor.Body.Instructions.First();
+
+                var creator = new InstructionBlockCreator(staticCtor, _referenceFinder);
+                var aspectStaticVariable = creator.CreateVariable(aspectTypeReference);
+                var newObjectAspectBlock = creator.NewObject(aspectStaticVariable, aspectTypeReference, _moduleDefinition, aspect, _aspectCounter);
+                foreach (var inst in newObjectAspectBlock.Instructions)
+                    processor.InsertBefore(first, inst);
+                processor.InsertBefore(first, processor.Create(OpCodes.Ldloc, aspectStaticVariable));
+                processor.InsertBefore(first, processor.Create(OpCodes.Stsfld, field));
+                var loadAspectFieldBlockChain = new NamedInstructionBlockChain(aspectVariable, aspectTypeReference);
+                loadAspectFieldBlockChain.Add(new InstructionBlock("LoadAspectField: ",
+                    Instruction.Create(OpCodes.Ldsfld, field),
+                    Instruction.Create(OpCodes.Stloc, aspectVariable)));
+                type.Resolve().Fields.Add(field);
+                return loadAspectFieldBlockChain;
+            }
+            else
+            {
+                var newObjectAspectBlock = _creator.NewObject(aspectVariable,
+                    aspectTypeReference, _moduleDefinition, aspect, _aspectCounter);
+                var newObjectAspectBlockChain = new NamedInstructionBlockChain(aspectVariable, aspectTypeReference);
+                newObjectAspectBlockChain.Add(newObjectAspectBlock);
+                return newObjectAspectBlockChain;
+            }
         }
 
         public InstructionBlockChain SetMethodExecutionArgsReturnValue(
@@ -136,7 +177,7 @@ namespace MethodBoundaryAspect.Fody
         public NamedInstructionBlockChain SetMethodExecutionArgsExceptionFromStack(
             NamedInstructionBlockChain createMethodExecutionArgsInstance)
         {
-            var exceptionTypeRef = _referenceFinder.GetTypeReference(typeof (Exception));
+            var exceptionTypeRef = _referenceFinder.GetTypeReference(typeof(Exception));
             var exceptionVariable = _creator.CreateVariable(exceptionTypeRef);
             var assignExceptionVariable = _creator.AssignValueFromStack(exceptionVariable);
 
@@ -174,8 +215,8 @@ namespace MethodBoundaryAspect.Fody
             var instructions = _creator.SaveReturnValueFromStack(returnValueVariable);
             block.Add(instructions);
             return block;
-        } 
-        
+        }
+
         public NamedInstructionBlockChain SaveThrownException()
         {
             var exceptionTypeRef = _referenceFinder.GetTypeReference(typeof(Exception));
@@ -198,10 +239,44 @@ namespace MethodBoundaryAspect.Fody
                 md => md.Name == "OnEntry");
             var callOnEntryBlock = _creator.CallVoidInstanceMethod(createAspectInstance.Variable, onEntryMethodRef,
                 newMethodExectionArgsBlockChain.Variable);
+            var readParameterBlock = _creator.ReadParameterArray(newMethodExectionArgsBlockChain.Variable);
 
             var callAspectOnEntryBlockChain = new InstructionBlockChain();
             callAspectOnEntryBlockChain.Add(callOnEntryBlock);
+            callAspectOnEntryBlockChain.Add(readParameterBlock);
             return callAspectOnEntryBlockChain;
+        }
+
+		public InstructionBlockChain LoadExecuteBodyVariable(NamedInstructionBlockChain newMethodExecutionArgsBlockChain, out NamedInstructionBlockChain executeBodyVariable)
+		{
+			var getExecuteBody = _referenceFinder.GetMethodReference(newMethodExecutionArgsBlockChain.TypeReference,
+				md => md.Name == "get_ExecuteBody");
+
+			var executeBodyVar = _creator.CreateVariable(getExecuteBody.ReturnType);
+			executeBodyVariable = new NamedInstructionBlockChain(executeBodyVar, getExecuteBody.ReturnType);
+			var block = _creator.CallInstanceMethod(newMethodExecutionArgsBlockChain.Variable, executeBodyVariable.Variable, getExecuteBody);
+
+			var getExecuteBodyBlockChain = new InstructionBlockChain();
+			getExecuteBodyBlockChain.Add(block);
+			return getExecuteBodyBlockChain;
+		}
+
+		public InstructionBlockChain ReadReturnValue(NamedInstructionBlockChain newMethodExecutionArgsBlockChain,
+            NamedInstructionBlockChain returnValue)
+        {
+            if (!_creator.HasReturnValue())
+                return new InstructionBlockChain();
+
+            // VariableDefinition, VariableDefinition, MethodDefinition
+            var getReturnValue =
+                _referenceFinder.GetMethodReference(newMethodExecutionArgsBlockChain.TypeReference,
+                    md => md.Name == "get_ReturnValue");
+
+            var readValueBlock = _creator.CallInstanceMethod(newMethodExecutionArgsBlockChain.Variable, returnValue.Variable, getReturnValue);
+
+            var readValueBlockChain = new InstructionBlockChain();
+            readValueBlockChain.Add(readValueBlock);
+            return readValueBlockChain;
         }
 
         public InstructionBlockChain CallAspectOnExit(NamedInstructionBlockChain createAspectInstance,

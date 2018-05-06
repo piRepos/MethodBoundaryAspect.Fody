@@ -207,20 +207,27 @@ namespace MethodBoundaryAspect.Fody
 
         public void AddOnEntryCall(
             NamedInstructionBlockChain createAspectInstance,
-            InstructionBlockChain callAspectOnEntry)
+            InstructionBlockChain callAspectOnEntry,
+			InstructionBlockChain getSkipVar,
+			NamedInstructionBlockChain conditionalExecutionInstance)
         {
             var current = AddCreateAspectInstance(createAspectInstance, _markStart3BeforeOnEntryCall);
-            callAspectOnEntry.InsertAfter(current, _processor);
+            current = callAspectOnEntry.InsertAfter(current, _processor);
+			current = getSkipVar.InsertAfter(current, _processor);
+			current = conditionalExecutionInstance.InsertAfter(current, _processor);
+			_processor.InsertAfter(current, _processor.Create(OpCodes.Brfalse_S, _markEnd2BeforeOnExitCall));
         }
 
         public void AddOnExitCall(
             NamedInstructionBlockChain createAspectInstance,
             InstructionBlockChain callAspectOnExit,
-            InstructionBlockChain setMethodExecutionArgsReturnValue)
+            InstructionBlockChain setMethodExecutionArgsReturnValue,
+            InstructionBlockChain readReturnValue)
         {
             var current = setMethodExecutionArgsReturnValue.InsertAfter(_markEnd2BeforeOnExitCall, _processor);
             current = AddCreateAspectInstance(createAspectInstance, current);
             callAspectOnExit.InsertAfter(current, _processor);
+            readReturnValue.InsertAfter(callAspectOnExit.Last, _processor);
         }
 
         public void AddOnExceptionCall(

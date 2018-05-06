@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using MethodBoundaryAspect.Attributes;
 using MethodBoundaryAspect.Fody.Attributes;
 using Mono.Cecil;
 using Mono.Cecil.Rocks;
@@ -26,8 +27,14 @@ namespace MethodBoundaryAspect.Fody.Ordering
             InitRole(aspectAttributes);
             InitOrder(aspectAttributes);
             InitSkipProperties(aspectAttributes);
+            InitForceOverrides(aspectAttributes);
+            InitCaching(aspectAttributes);
         }
         
+        public Caching CachingLevel { get; private set; }
+
+        public bool ForceOverrides { get; private set; }
+
         public string Name { get; private set; }
 
         public string Role { get; private set; }
@@ -100,6 +107,24 @@ namespace MethodBoundaryAspect.Fody.Ordering
             var skipProperties = (bool)skipPropertiesAttribute.ConstructorArguments[0].Value;
 
             SkipProperties = skipProperties;
+        }
+
+        private void InitForceOverrides(IEnumerable<CustomAttribute> aspectAttributes)
+        {
+            ForceOverrides = aspectAttributes.Any(c => c.AttributeType.FullName == typeof(AspectForceOverridesAttribute).FullName);
+        }
+
+        void InitCaching(IEnumerable<CustomAttribute> aspectAttributes)
+        {
+            var cacheSpecification = aspectAttributes.FirstOrDefault(c => c.AttributeType.FullName == typeof(AspectCachingAttribute).FullName);
+
+            if (cacheSpecification != null)
+            {
+                var specification = cacheSpecification.ConstructorArguments.First();
+                CachingLevel = (Caching)specification.Value;
+            }
+            else
+                CachingLevel = Caching.None;
         }
     }
 }

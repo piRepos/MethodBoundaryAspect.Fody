@@ -55,11 +55,13 @@ namespace MethodBoundaryAspect.Fody
         public int TotalWeavedTypes { get; private set; }
         public int TotalWeavedMethods { get; private set; }
         public int TotalWeavedPropertyMethods { get; private set; }
+        public byte[] UnweavedAssembly { get; private set; }
 
         public MethodDefinition LastWeavedMethod { get; private set; }
 
         public void Execute()
         {
+            UnweavedAssembly = File.ReadAllBytes(ModuleDefinition.FileName);
             Execute(ModuleDefinition);
         }
 
@@ -101,6 +103,7 @@ namespace MethodBoundaryAspect.Fody
             if (AdditionalAssemblyResolveFolders.Any())
                 readerParameters.AssemblyResolver = new FolderAssemblyResolver(AdditionalAssemblyResolveFolders);
 
+            UnweavedAssembly = File.ReadAllBytes(assemblyPath);
 			using (var assemblyDefinition = AssemblyDefinition.ReadAssembly(assemblyPath, readerParameters))
 			{
 				var module = assemblyDefinition.MainModule;
@@ -165,9 +168,9 @@ namespace MethodBoundaryAspect.Fody
                 .ToDictionary(x => x.SetMethod);
 
             var weavedAtLeastOneMethod = false;
-            foreach (var method in type.Methods)
+            foreach (var method in type.Methods.ToList())
             {
-                if (!IsWeavableMethod(method))
+                if (!IsWeavableMethod(method, type))
                     continue;
 
                 Collection<CustomAttribute> methodMethodBoundaryAspects;
@@ -188,20 +191,70 @@ namespace MethodBoundaryAspect.Fody
                 if (aspectInfos.Count == 0)
                     continue;
 
-                weavedAtLeastOneMethod = WeaveMethod(
+                weavedAtLeastOneMethod |= WeaveMethod(
                     module,
                     method,
-                    aspectInfos);
-            }   
+                    aspectInfos,
+                    type);
+            }
+
+            var classLevelAspectInfos = assemblyMethodBoundaryAspects
+                .Concat(classMethodBoundaryAspects)
+                .Where(IsMethodBoundaryAspect)
+                .Select(x => new AspectInfo(x))
+                .Where(x => x.ForceOverrides)
+                .ToList();
+
+            if (classLevelAspectInfos.Count != 0)
+                foreach (var baseVirtualMethod in GetPotentiallyOverridableMethods(type))
+                {
+                    if (!IsWeavableMethod(baseVirtualMethod, type))
+                        continue;
+
+                    var @override = new MethodDefinition(baseVirtualMethod.Name, baseVirtualMethod.Attributes, baseVirtualMethod.ReturnType);
+
+                    foreach (var p in baseVirtualMethod.GenericParameters)
+                        @override.GenericParameters.Add(new GenericParameter(p));
+
+                    foreach (var p in baseVirtualMethod.Parameters)
+                        @override.Parameters.Add(new ParameterDefinition(p.ParameterType));
+
+                    var il = @override.Body.GetILProcessor();
+                    il.Emit(OpCodes.Ldarg_0);
+                    for (int i = 0; i < baseVirtualMethod.Parameters.Count; ++i)
+                        il.Emit(OpCodes.Ldarg, i + 1);
+                    il.Emit(OpCodes.Call, baseVirtualMethod);
+                    il.Emit(OpCodes.Ret);
+
+                    if (WeaveMethod(module, @override, classLevelAspectInfos, type))
+                    {
+                        type.Methods.Add(@override);
+                        @override.Overrides.Add(baseVirtualMethod);
+                        weavedAtLeastOneMethod = true;
+                    }
+                }
 
             if (weavedAtLeastOneMethod)
                 TotalWeavedTypes++;
         }
 
+        private IEnumerable<MethodDefinition> GetPotentiallyOverridableMethods(TypeReference type)
+        {
+            for (TypeDefinition typeDef = type.Resolve()?.BaseType?.Resolve(); typeDef != null && typeDef.FullName != typeof(Object).FullName; typeDef = typeDef.BaseType.Resolve())
+            {
+                foreach (var method in typeDef.Methods)
+                {
+                    if (method.IsVirtual && !method.IsFinal && !method.HasOverrides)
+                        yield return method.Resolve();
+                }
+            }
+        }
+
         private bool WeaveMethod(
             ModuleDefinition module, 
             MethodDefinition method,
-            List<AspectInfo> aspectInfos)
+            List<AspectInfo> aspectInfos,
+            TypeReference type)
         {
             aspectInfos = AspectOrderer.Order(aspectInfos);
             aspectInfos.Reverse(); // last aspect has to be weaved in first
@@ -224,10 +277,8 @@ namespace MethodBoundaryAspect.Fody
                     var overriddenAspectMethods = GetUsedAspectMethods(aspectTypeDefinition);
                     if (overriddenAspectMethods == AspectMethods.None)
                         continue;
-
                     
-
-                    methodWeaver.Weave(method, aspectInfo.AspectAttribute, overriddenAspectMethods, module);
+                    methodWeaver.Weave(method, aspectInfo.AspectAttribute, overriddenAspectMethods, module, type, UnweavedAssembly);
                 }
 
                 if (methodWeaver.WeaveCounter == 0)
@@ -272,6 +323,8 @@ namespace MethodBoundaryAspect.Fody
                 aspectMethods |= AspectMethods.OnExit;
             if (overloadedMethods.ContainsKey("OnException"))
                 aspectMethods |= AspectMethods.OnException;
+            if (overloadedMethods.ContainsKey(nameof(OnMethodBoundaryAspect.CompileTimeValidate)))
+                aspectMethods |= AspectMethods.CompileTimeValidate;
             return aspectMethods;
         }
 
@@ -294,7 +347,7 @@ namespace MethodBoundaryAspect.Fody
             return IsMethodBoundaryAspect(customAttribute.AttributeType.Resolve());
         }
 
-        private bool IsWeavableMethod(MethodDefinition method)
+        private bool IsWeavableMethod(MethodDefinition method, TypeReference type)
         {
             var fullName = method.DeclaringType.FullName;
             var name = method.Name;
@@ -302,7 +355,7 @@ namespace MethodBoundaryAspect.Fody
             if (IsIgnoredByWeaving(method))
                 return false;
 
-            if (IsUserFiltered(fullName, name))
+            if (IsUserFiltered(fullName, name, type))
                 return false;
 
             return !(method.IsAbstract // abstract or interface method
@@ -311,13 +364,12 @@ namespace MethodBoundaryAspect.Fody
                      || method.IsPInvokeImpl); // extern
         }
 
-        private bool IsUserFiltered(string fullName, string name)
+        private bool IsUserFiltered(string fullName, string name, TypeReference type)
         {
             if (_classFilters.Any())
             {
                 var classFullName = fullName;
-                var matched = _classFilters.Contains(classFullName);
-                if (!matched)
+                if (!_classFilters.Contains(classFullName) && !_classFilters.Contains(type.FullName))
                     return true;
             }
 
