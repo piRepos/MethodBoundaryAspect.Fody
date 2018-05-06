@@ -215,7 +215,7 @@ namespace MethodBoundaryAspect.Fody
             current = callAspectOnEntry.InsertAfter(current, _processor);
 			current = getSkipVar.InsertAfter(current, _processor);
 			current = conditionalExecutionInstance.InsertAfter(current, _processor);
-			_processor.InsertAfter(current, _processor.Create(OpCodes.Brfalse_S, _markEnd2BeforeOnExitCall));
+			_processor.InsertAfter(current, _processor.Create(OpCodes.Brfalse, _markEnd2BeforeOnExitCall));
         }
 
         public void AddOnExitCall(
